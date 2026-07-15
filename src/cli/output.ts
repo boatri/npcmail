@@ -1,13 +1,10 @@
-// Output helpers. Two modes:
-//  - human (TTY): colors, aligned tables
-//  - agent (--json or piped): stable JSON on stdout, progress on stderr
-import { inspect } from "node:util";
-
+// Output contract: stable JSON (or bare values) on stdout for agents,
+// colors/progress on stderr for humans.
 export const isTty = process.stdout.isTTY === true;
 const useColor = isTty && !process.env.NO_COLOR;
 
 const wrap = (open: number, close: number) => (s: string) =>
-  useColor ? `[${open}m${s}[${close}m` : s;
+  useColor ? `\x1b[${open}m${s}\x1b[${close}m` : s;
 
 export const bold = wrap(1, 22);
 export const dim = wrap(2, 22);
@@ -15,7 +12,6 @@ export const red = wrap(31, 39);
 export const green = wrap(32, 39);
 export const yellow = wrap(33, 39);
 export const cyan = wrap(36, 39);
-export const magenta = wrap(35, 39);
 
 export function printJson(data: unknown): void {
   process.stdout.write(JSON.stringify(data, null, 2) + "\n");
@@ -70,9 +66,6 @@ export function table(rows: string[][], header?: string[]): string {
 
 // Width ignoring ANSI escapes.
 function cellWidth(s: string): number {
-  return s.replace(/\[[0-9;]*m/g, "").length;
-}
-
-export function debugDump(v: unknown): string {
-  return inspect(v, { depth: 6, colors: useColor });
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/\x1b\[[0-9;]*m/g, "").length;
 }

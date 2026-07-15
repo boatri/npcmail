@@ -75,9 +75,12 @@ export class CfClient {
     try {
       await this.req("POST", `/zones/${zoneId}/email/routing/enable`, { json: {} });
       return;
-    } catch {
-      // Some tokens can edit routing rules + DNS but not the routing settings
-      // endpoints. Fall back to creating the records Email Routing needs.
+    } catch (e) {
+      // Minimal tokens can edit routing rules + DNS but not the routing
+      // settings endpoints; only for that case fall back to creating the
+      // records ourselves. Anything else (network, 5xx) must surface.
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!/authentication|authorization|code 10000|code 9109/i.test(msg)) throw e;
     }
     await this.createEmailRoutingDnsRecords(zoneId);
   }
@@ -89,6 +92,8 @@ export class CfClient {
       `/zones/${zoneId}/dns_records?per_page=100`,
     );
     const zoneName = (await this.req<{ name: string }>("GET", `/zones/${zoneId}`)).name;
+    // Same record set Cloudflare provisions when Email Routing is enabled from
+    // the dashboard; relative MX priorities are arbitrary but kept distinct.
     const wanted: Array<{ type: string; name: string; content: string; priority?: number }> = [
       { type: "MX", name: zoneName, content: "route1.mx.cloudflare.net", priority: 37 },
       { type: "MX", name: zoneName, content: "route2.mx.cloudflare.net", priority: 63 },
@@ -154,6 +159,9 @@ export class CfClient {
       headers: { authorization: `Bearer ${this.token}` },
     });
     if (res.status === 401 || res.status === 403) return "denied";
+    if (res.status >= 500) {
+      throw new CliError(`Cloudflare API unavailable (HTTP ${res.status}) — try again in a minute`);
+    }
     const data = (await res.json().catch(() => null)) as CfEnvelope<unknown> | null;
     if (data && !data.success) {
       const authError = (data.errors ?? []).some(
@@ -162,15 +170,6 @@ export class CfClient {
       if (authError) return "denied";
     }
     return "ok";
-  }
-
-  async workerExists(accountId: string, name: string): Promise<boolean> {
-    try {
-      await this.req("GET", `/accounts/${accountId}/workers/scripts/${name}/settings`);
-      return true;
-    } catch {
-      return false;
-    }
   }
 
   async uploadWorker(
@@ -208,18 +207,20 @@ export class CfClient {
     }
     const base = desired.toLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 40) || "npcmail";
     const candidates = [base, `${base}-mail`, `${base}-${Math.floor(Math.random() * 9000) + 1000}`];
+    let lastError = "";
     for (const candidate of candidates) {
       try {
         const res = await this.req<{ subdomain: string }>("PUT", `/accounts/${accountId}/workers/subdomain`, {
           json: { subdomain: candidate },
         });
         return res.subdomain;
-      } catch {
-        // taken — try the next candidate
+      } catch (e) {
+        lastError = e instanceof Error ? e.message : String(e); // likely taken — try the next
       }
     }
     throw new CliError(
-      "could not register a workers.dev subdomain automatically. Open dash.cloudflare.com → Workers & Pages once (this claims a subdomain), then re-run setup.",
+      `could not register a workers.dev subdomain automatically (${lastError}). ` +
+        `Open dash.cloudflare.com → Workers & Pages once (this claims a subdomain), then re-run setup.`,
     );
   }
 

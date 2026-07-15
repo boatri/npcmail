@@ -1,17 +1,26 @@
-import type { NpcmailConfig } from "./config";
+import { appendDomain, OTP_LONG_POLL_CAP_SECONDS } from "../shared/constants";
 import type { Identity, MessageFull, MessageSummary, OtpResult, HealthResult } from "../shared/types";
+import type { NpcmailConfig } from "./config";
 import { CliError } from "./output";
+
+function query(params: Record<string, string | number | boolean | undefined>): string {
+  const sp = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== false) sp.set(k, String(v === true ? 1 : v));
+  }
+  const qs = sp.toString();
+  return qs ? `?${qs}` : "";
+}
 
 export class ApiClient {
   constructor(private cfg: NpcmailConfig) {}
 
-  get domain(): string {
-    return this.cfg.domain;
+  normalizeAddress(input: string): string {
+    return appendDomain(input, this.cfg.domain);
   }
 
-  normalizeAddress(input: string): string {
-    const s = input.trim().toLowerCase();
-    return s.includes("@") ? s : `${s}@${this.cfg.domain}`;
+  private identityPath(address: string, sub?: string): string {
+    return `/v1/identities/${encodeURIComponent(this.normalizeAddress(address))}${sub ? `/${sub}` : ""}`;
   }
 
   private async req<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -55,29 +64,29 @@ export class ApiClient {
   }
 
   listIdentities(limit = 100): Promise<{ identities: Identity[] }> {
-    return this.req("GET", `/v1/identities?limit=${limit}`);
-  }
-
-  getIdentity(address: string): Promise<Identity> {
-    return this.req("GET", `/v1/identities/${encodeURIComponent(this.normalizeAddress(address))}`);
+    return this.req("GET", `/v1/identities${query({ limit })}`);
   }
 
   deleteIdentity(address: string): Promise<{ deleted: string }> {
-    return this.req("DELETE", `/v1/identities/${encodeURIComponent(this.normalizeAddress(address))}`);
+    return this.req("DELETE", this.identityPath(address));
   }
 
   listMessages(
     address: string,
+    opts?: { since?: string; limit?: number },
+  ): Promise<{ messages: MessageSummary[] }>;
+  listMessages(
+    address: string,
+    opts: { since?: string; limit?: number; full: true },
+  ): Promise<{ messages: MessageFull[] }>;
+  listMessages(
+    address: string,
     opts: { since?: string; limit?: number; full?: boolean } = {},
   ): Promise<{ messages: MessageSummary[] | MessageFull[] }> {
-    const params = new URLSearchParams();
-    if (opts.since) params.set("since", opts.since);
-    if (opts.limit) params.set("limit", String(opts.limit));
-    if (opts.full) params.set("full", "1");
-    const qs = params.toString();
     return this.req(
       "GET",
-      `/v1/identities/${encodeURIComponent(this.normalizeAddress(address))}/messages${qs ? "?" + qs : ""}`,
+      this.identityPath(address, "messages") +
+        query({ since: opts.since, limit: opts.limit, full: opts.full }),
     );
   }
 
@@ -85,19 +94,12 @@ export class ApiClient {
     return this.req("GET", `/v1/messages/${id}`);
   }
 
-  // One server-side long-poll round (server caps at ~25s).
+  // One server-side long-poll round (the worker caps the wait).
   otpOnce(address: string, opts: { since?: string; wait?: number } = {}): Promise<OtpResult> {
-    const params = new URLSearchParams();
-    if (opts.since) params.set("since", opts.since);
-    if (opts.wait) params.set("wait", String(opts.wait));
-    const qs = params.toString();
-    return this.req(
-      "GET",
-      `/v1/identities/${encodeURIComponent(this.normalizeAddress(address))}/otp${qs ? "?" + qs : ""}`,
-    );
+    return this.req("GET", this.identityPath(address, "otp") + query({ since: opts.since, wait: opts.wait }));
   }
 
-  // Client-side loop chaining long-polls to honor arbitrary --wait durations.
+  // Chains long-polls to honor arbitrary --wait durations.
   async otpWait(address: string, opts: { since?: string; waitSeconds: number }): Promise<OtpResult> {
     const deadline = Date.now() + opts.waitSeconds * 1000;
     for (;;) {
@@ -105,7 +107,7 @@ export class ApiClient {
       if (remaining <= 0) return { found: false, code: null, link: null };
       const res = await this.otpOnce(address, {
         since: opts.since,
-        wait: Math.min(remaining, 25),
+        wait: Math.min(remaining, OTP_LONG_POLL_CAP_SECONDS),
       });
       if (res.found) return res;
       if (Date.now() >= deadline) return res;

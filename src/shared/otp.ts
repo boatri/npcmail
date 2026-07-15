@@ -35,11 +35,23 @@ export function htmlToText(html: string): string {
     .trim();
 }
 
+// href values are HTML-attribute text: "&" arrives as "&amp;". Decode before
+// storing or multi-parameter signed links break at the receiving server.
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&amp;/gi, "&")
+    .replace(/&#0*38;/g, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0*39;/g, "'");
+}
+
 function extractHrefs(html: string): string[] {
   const hrefs: string[] = [];
   const re = /href\s*=\s*["']?(https?:\/\/[^"'\s>]+)/gi;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(html)) !== null) hrefs.push(m[1]!);
+  while ((m = re.exec(html)) !== null) hrefs.push(decodeEntities(m[1]!));
   return hrefs;
 }
 

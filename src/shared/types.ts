@@ -50,7 +50,3 @@ export interface HealthResult {
   identities: number;
   messages: number;
 }
-
-export interface ApiError {
-  error: string;
-}

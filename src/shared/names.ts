@@ -43,13 +43,12 @@ export const LAST_NAMES: string[] = [
 export interface GeneratedName {
   first: string;
   last: string;
-  local: string;
 }
 
 export function generateName(random: () => number = Math.random): GeneratedName {
   const first = FIRST_NAMES[Math.floor(random() * FIRST_NAMES.length)]!;
   const last = LAST_NAMES[Math.floor(random() * LAST_NAMES.length)]!;
-  return { first, last, local: `${first}.${last}` };
+  return { first, last };
 }
 
 export function capitalize(s: string | null): string | null {

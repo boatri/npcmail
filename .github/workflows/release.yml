@@ -1,0 +1,32 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  id-token: write # OIDC for npm trusted publishing — no token stored anywhere
+  contents: write # gh release create
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - run: bun install --frozen-lockfile
+      - name: Publish to npm (skips if version already published)
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "npcmail@$VERSION" version >/dev/null 2>&1; then
+            echo "npcmail@$VERSION already on npm — skipping publish"
+          else
+            npm publish # prepublishOnly runs typecheck + tests + build
+          fi
+      - run: gh release create "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

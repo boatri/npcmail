@@ -96,7 +96,18 @@ MAIL
 SERVICE
   status      health + counts
   config      current configuration
+  update      update the CLI to the latest version
 ```
+
+### Staying up to date
+
+npcmail checks npm for new versions at most once a day (3s timeout, cached, never blocks
+a command) and prints a two-line notice on stderr when one exists. It stays silent in CI,
+non-TTY sessions, `--json` mode, and under `NO_UPDATE_NOTIFIER`/`NPCMAIL_NO_UPDATE_CHECK`.
+
+`npcmail update` upgrades via whichever package manager installed it (npm/bun/pnpm/yarn).
+The worker on your domain updates separately: re-run `npcmail setup --domain <yourdomain>`
+after updating — it re-deploys the bundled worker idempotently.
 
 ### Agent usage
 
@@ -128,6 +139,9 @@ CODE=$(npcmail otp "$ADDRESS" --wait 120)     # blocks until the code arrives
     "message": { "subject": "...", "textBody": "...", "textFromHtml": "..." }
   }
   ```
+- `otp --wait` without `--since` only accepts messages received in the last 2 minutes,
+  so a stale code from an earlier signup can never satisfy a fresh wait. Pass `--since`
+  explicitly to control the window, or omit both to inspect the latest stored message.
 - Exit codes: `0` ok · `1` error · `2` usage · `3` not found · `4` nothing arrived before `--wait`.
 - Stateless mode (no config file): set `NPCMAIL_URL`, `NPCMAIL_TOKEN`, `NPCMAIL_DOMAIN`.
 
@@ -168,10 +182,21 @@ inbound email → Cloudflare Email Routing (catch-all)
 
 ```bash
 bun install
-bun test              # OTP extraction tests
+bun test
 bun run typecheck
 bun run build         # dist/worker.js + dist/cli.js
 ```
+
+### Releasing (maintainers)
+
+```bash
+npm version patch   # or minor / major — bumps, commits, tags
+git push --follow-tags
+```
+
+The tag triggers `.github/workflows/release.yml`, which publishes to npm via
+[trusted publishing](https://docs.npmjs.com/trusted-publishers/) (GitHub OIDC — no
+tokens stored) and creates a GitHub release with generated notes.
 
 ## License
 

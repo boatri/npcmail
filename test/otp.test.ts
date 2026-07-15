@@ -93,6 +93,12 @@ describe("extractOtp — links", () => {
     const r = extractOtp("Hi", "Check our homepage https://example.com/pricing", null);
     expect(r.link).toBeNull();
   });
+
+  test("decodes &amp; in hrefs — multi-param links stay intact", () => {
+    const html = `<a href="https://x.com/verify?token=abc&amp;uid=42&amp;sig=zz9">Verify email</a>`;
+    const r = extractOtp("Verify", null, html);
+    expect(r.link).toBe("https://x.com/verify?token=abc&uid=42&sig=zz9");
+  });
 });
 
 describe("htmlToText", () => {

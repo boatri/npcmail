@@ -46,7 +46,8 @@ export function writeConfig(cfg: NpcmailConfig): string {
   const dir = configDir();
   mkdirSync(dir, { recursive: true });
   const p = configPath();
-  writeFileSync(p, JSON.stringify(cfg, null, 2) + "\n", "utf8");
-  chmodSync(p, 0o600);
+  // mode on write, not chmod-after: no world-readable window for the tokens
+  writeFileSync(p, JSON.stringify(cfg, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  chmodSync(p, 0o600); // in case the file already existed with wider perms
   return p;
 }

@@ -2,8 +2,9 @@ import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { CfClient } from "./cf";
+import { sleep } from "../shared/constants";
 import { SCHEMA_STATEMENTS } from "../shared/schema";
+import { CfClient } from "./cf";
 import { readConfigFile, writeConfig, type NpcmailConfig } from "./config";
 import { promptForToken, verifyTokenScopes } from "./token";
 import { step, ok, warn, die, printJson, bold, cyan } from "./output";
@@ -16,52 +17,35 @@ export interface SetupFlags {
   json: boolean;
 }
 
-function loadWorkerBundle(): string {
-  // dist/worker.js ships alongside dist/cli.js in the npm package.
-  const here = dirname(fileURLToPath(import.meta.url));
-  return readFileSync(join(here, "worker.js"), "utf8");
+type Zone = Awaited<ReturnType<CfClient["findZone"]>>;
+
+async function resolveCloudflareToken(domain: string, priorCfg: NpcmailConfig | null): Promise<string> {
+  const fromEnv = process.env.CLOUDFLARE_API_TOKEN ?? process.env.CF_API_TOKEN ?? priorCfg?.cfToken;
+  if (fromEnv) return fromEnv;
+  if (!process.stdin.isTTY) {
+    die(
+      "no Cloudflare API token available (CLOUDFLARE_API_TOKEN env, or saved config).\n" +
+        "Non-interactive session detected. Get a one-click token-creation URL with:\n" +
+        "  npcmail token-url --json\n" +
+        "have the user create the token there, then re-run setup with CLOUDFLARE_API_TOKEN set.",
+      2,
+    );
+  }
+  return promptForToken(domain);
 }
 
-export async function cmdSetup(flags: SetupFlags): Promise<void> {
-  const domain = flags.domain?.toLowerCase();
-  if (!domain) die("--domain is required (a domain on your Cloudflare account, e.g. --domain example.com)", 2);
-
-  // Token resolution: flag/env → saved config → interactive browser flow.
-  const priorCfg = readConfigFile();
-  let cfToken = process.env.CLOUDFLARE_API_TOKEN ?? process.env.CF_API_TOKEN ?? priorCfg?.cfToken;
-  if (!cfToken) {
-    if (!process.stdin.isTTY) {
-      die(
-        "no Cloudflare API token available (CLOUDFLARE_API_TOKEN env, or saved config).\n" +
-          "Non-interactive session detected. Get a one-click token-creation URL with:\n" +
-          "  npcmail token-url --json\n" +
-          "have the user create the token there, then re-run setup with CLOUDFLARE_API_TOKEN set.",
-        2,
-      );
-    }
-    cfToken = await promptForToken(domain);
-  }
-
-  const cf = new CfClient(cfToken);
-  await verifyTokenScopes(cf, domain);
-
-  step(`looking up zone ${bold(domain)}`);
-  const zone = await cf.findZone(domain);
-  const accountId = zone.account.id;
-
-  // ---- safety preflight ----------------------------------------------------
-  // npcmail takes over ALL email for the domain (catch-all). If the domain
-  // already receives real email, enabling Email Routing would break it.
+// npcmail takes over ALL email for the domain (catch-all). If the domain
+// already receives real email, proceeding would break it — refuse loudly.
+async function assertDomainSafeToTakeOver(cf: CfClient, zone: Zone, flags: SetupFlags): Promise<void> {
   step(`preflight: checking the domain is safe to take over`);
+
   const mx = await cf.listMxRecords(zone.id);
   const foreignMx = mx.filter((r) => !/mx\d*\.cloudflare\.net$/i.test(r.content));
-  const routing = await cf.emailRoutingStatus(zone.id).catch(() => ({ enabled: false }));
-
   if (foreignMx.length > 0) {
     const list = foreignMx.map((r) => `  ${r.name} → ${r.content}`).join("\n");
     if (!flags.force) {
       die(
-        `${domain} already has MX records pointing at another mail provider:\n${list}\n` +
+        `${zone.name} already has MX records pointing at another mail provider:\n${list}\n` +
           `Enabling npcmail would REPLACE them and break existing email for this domain.\n` +
           `npcmail is designed for domains that don't receive email. Use a different domain,\n` +
           `or re-run with --force if you are certain this email setup is unused.`,
@@ -70,44 +54,74 @@ export async function cmdSetup(flags: SetupFlags): Promise<void> {
     warn(`--force: existing MX records will be replaced by Cloudflare Email Routing`);
   }
 
-  if (routing.enabled) {
-    const catchAll = await cf.getCatchAll(zone.id).catch(() => null);
-    const action = catchAll?.actions?.[0];
-    const isOurs = action?.type === "worker" && action.value?.[0] === flags.workerName;
-    if (catchAll?.enabled && !isOurs && !flags.force) {
+  // The safety decision must not silently pass when the read fails.
+  let catchAll: Awaited<ReturnType<CfClient["getCatchAll"]>> | null = null;
+  try {
+    catchAll = await cf.getCatchAll(zone.id);
+  } catch (e) {
+    if (!flags.force) {
       die(
-        `${domain} already has Email Routing enabled with a catch-all rule ` +
+        `could not read the current catch-all rule for ${zone.name} ` +
+          `(${e instanceof Error ? e.message : e}).\n` +
+          `This check protects an existing email setup from being overwritten. ` +
+          `Fix the token/API issue, or re-run with --force to skip the check.`,
+      );
+    }
+    warn(`--force: skipping catch-all safety check (read failed)`);
+    return;
+  }
+
+  const action = catchAll?.actions?.[0];
+  const isOurs = action?.type === "worker" && action.value?.[0] === flags.workerName;
+  if (catchAll?.enabled && !isOurs) {
+    if (!flags.force) {
+      die(
+        `${zone.name} already has an enabled catch-all rule ` +
           `(action: ${action?.type ?? "unknown"}${action?.value ? " → " + action.value.join(",") : ""}).\n` +
           `npcmail needs the catch-all. Re-run with --force to replace it, or use another domain.`,
       );
     }
-    if (catchAll?.enabled && !isOurs) warn(`--force: existing catch-all rule will be replaced`);
+    warn(`--force: existing catch-all rule will be replaced`);
   }
+}
 
-  // ---- D1 -------------------------------------------------------------------
+async function ensureDatabase(cf: CfClient, accountId: string): Promise<{ uuid: string }> {
   step(`ensuring D1 database ${bold("npcmail")}`);
   const existing = (await cf.listD1(accountId)).find((d) => d.name === "npcmail");
   const db = existing ?? (await cf.createD1(accountId, "npcmail"));
   if (existing) step(`reusing existing D1 database (${db.uuid})`);
-
   step(`applying schema`);
   for (const stmt of SCHEMA_STATEMENTS) {
     await cf.d1Query(accountId, db.uuid, stmt);
   }
+  return db;
+}
 
-  // ---- API token for the service --------------------------------------------
-  // Reuse the token from an existing config for the same domain so previously
-  // configured clients keep working across re-runs.
-  const apiToken =
-    priorCfg && priorCfg.domain === domain && priorCfg.token
-      ? priorCfg.token
-      : randomBytes(32).toString("hex");
+// Reuse the service token from an existing config for the same domain so
+// previously configured clients keep working across re-runs.
+function resolveServiceToken(priorCfg: NpcmailConfig | null, domain: string): string {
+  return priorCfg && priorCfg.domain === domain && priorCfg.token
+    ? priorCfg.token
+    : randomBytes(32).toString("hex");
+}
 
-  // ---- worker ----------------------------------------------------------------
+function loadWorkerBundle(): string {
+  // dist/worker.js ships alongside dist/cli.js in the npm package.
+  const here = dirname(fileURLToPath(import.meta.url));
+  return readFileSync(join(here, "worker.js"), "utf8");
+}
+
+async function deployWorker(
+  cf: CfClient,
+  accountId: string,
+  domain: string,
+  apiToken: string,
+  dbId: string,
+  flags: SetupFlags,
+): Promise<string> {
   step(`deploying worker ${bold(flags.workerName)}`);
-  const source = loadWorkerBundle();
-  await cf.uploadWorker(accountId, flags.workerName, source, [
-    { type: "d1", name: "DB", id: db.uuid },
+  await cf.uploadWorker(accountId, flags.workerName, loadWorkerBundle(), [
+    { type: "d1", name: "DB", id: dbId },
     { type: "secret_text", name: "API_TOKEN", text: apiToken },
     { type: "plain_text", name: "DOMAIN", text: domain },
     { type: "plain_text", name: "RETENTION_DAYS", text: String(flags.retentionDays) },
@@ -116,66 +130,76 @@ export async function cmdSetup(flags: SetupFlags): Promise<void> {
   step(`enabling workers.dev URL`);
   const subdomain = await cf.getWorkersSubdomain(accountId, domain.split(".")[0] ?? "npcmail");
   await cf.enableWorkerSubdomain(accountId, flags.workerName);
-  const url = `https://${flags.workerName}.${subdomain}.workers.dev`;
+  return `https://${flags.workerName}.${subdomain}.workers.dev`;
+}
 
-  // ---- email routing ---------------------------------------------------------
+async function ensureEmailRouting(cf: CfClient, zone: Zone, workerName: string): Promise<void> {
+  const routing = await cf.emailRoutingStatus(zone.id).catch(() => ({ enabled: false }));
   if (!routing.enabled) {
-    step(`enabling Email Routing on ${domain} (adds MX + SPF records)`);
+    step(`enabling Email Routing on ${zone.name} (adds MX + SPF records)`);
     await cf.enableEmailRouting(zone.id);
   } else {
     step(`Email Routing already enabled`);
   }
-
   step(`pointing catch-all at the worker`);
-  await cf.setCatchAllToWorker(zone.id, flags.workerName);
+  await cf.setCatchAllToWorker(zone.id, workerName);
+}
 
-  // ---- verify ----------------------------------------------------------------
+async function waitForHealth(url: string, apiToken: string): Promise<boolean> {
   step(`verifying deployment (worker may take a few seconds to propagate)`);
-  let healthy = false;
   for (let i = 0; i < 20; i++) {
     try {
       const res = await fetch(`${url}/v1/health`, {
         headers: { authorization: `Bearer ${apiToken}` },
       });
-      if (res.ok) {
-        healthy = true;
-        break;
-      }
+      if (res.ok) return true;
     } catch {
       // propagation in progress
     }
-    await new Promise((r) => setTimeout(r, 3000));
+    await sleep(3000);
   }
+  return false;
+}
+
+export async function cmdSetup(flags: SetupFlags): Promise<void> {
+  const domain = flags.domain?.toLowerCase();
+  if (!domain) die("--domain is required (a domain on your Cloudflare account, e.g. --domain example.com)", 2);
+
+  const priorCfg = readConfigFile();
+  const cfToken = await resolveCloudflareToken(domain, priorCfg);
+  const cf = new CfClient(cfToken);
+  await verifyTokenScopes(cf, domain);
+
+  step(`looking up zone ${bold(domain)}`);
+  const zone = await cf.findZone(domain);
+
+  await assertDomainSafeToTakeOver(cf, zone, flags);
+  const db = await ensureDatabase(cf, zone.account.id);
+  const apiToken = resolveServiceToken(priorCfg, domain);
+  const url = await deployWorker(cf, zone.account.id, domain, apiToken, db.uuid, flags);
+  await ensureEmailRouting(cf, zone, flags.workerName);
+  const healthy = await waitForHealth(url, apiToken);
   if (!healthy) {
     warn(`worker deployed but ${url}/v1/health did not respond yet; it may need another minute`);
   }
 
-  const cfg: NpcmailConfig = {
+  const cfgPath = writeConfig({
     url,
     token: apiToken,
     domain,
     workerName: flags.workerName,
-    accountId,
+    accountId: zone.account.id,
     zoneId: zone.id,
     d1Id: db.uuid,
     cfToken,
-  };
-  const cfgPath = writeConfig(cfg);
+  });
 
   ok(`npcmail is live on ${bold(domain)}`);
   ok(`API: ${cyan(url)}`);
   ok(`config written to ${cfgPath} (contains the API token)`);
 
   if (flags.json) {
-    printJson({
-      ok: true,
-      domain,
-      url,
-      workerName: flags.workerName,
-      d1Id: db.uuid,
-      configPath: cfgPath,
-      healthy,
-    });
+    printJson({ ok: true, domain, url, workerName: flags.workerName, d1Id: db.uuid, configPath: cfgPath, healthy });
   } else {
     process.stdout.write(
       `\nTry it:\n` +

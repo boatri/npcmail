@@ -1,9 +1,11 @@
-#!/usr/bin/env node
 // npcmail — throwaway email identities on your own domain, built for AI agents.
 import { CliError, fail, isTty } from "./output";
 import { cmdSetup, cmdTeardown } from "./setup";
 import { cmdTokenUrl } from "./token";
-import { cmdNew, cmdLs, cmdRm, cmdInbox, cmdRead, cmdOtp, cmdStatus, cmdConfig } from "./commands";
+import { cmdUpdate, maybeNotifyUpdate } from "./update";
+import { cmdNew, cmdLs, cmdRm } from "./commands/identities";
+import { cmdInbox, cmdRead, cmdOtp } from "./commands/messages";
+import { cmdStatus, cmdConfig } from "./commands/service";
 
 declare const NPCMAIL_VERSION: string;
 const VERSION = typeof NPCMAIL_VERSION !== "undefined" ? NPCMAIL_VERSION : "dev";
@@ -30,10 +32,12 @@ MAIL
   inbox <address> [--wait N] [--since ISO] [--limit N]   list messages
   read  <address | message-id>                           show full message
   otp   <address> [--wait N] [--since ISO]               extract verification code/link
+        (--wait without --since only accepts messages from the last 2 minutes)
 
 SERVICE
   status                       service health + counts
   config                       show current configuration
+  update                       update the CLI to the latest version
 
 FLAGS
   --json      machine-readable output on stdout (works on every command)
@@ -43,12 +47,13 @@ FLAGS
 NOTES FOR AGENTS
   · <address> can be bare ("jane.moreau") — the configured domain is appended.
   · otp prints the bare code/link on stdout: CODE=$(npcmail otp jane.moreau --wait 90)
+  · otp --json always includes the full message — extract manually when "code" is null.
   · exit codes: 0 ok · 1 error · 2 usage · 3 not found · 4 nothing arrived before --wait
   · any address on the domain receives mail without prior creation (catch-all);
     identities appear automatically on first received message.
 `;
 
-interface Parsed {
+export interface Parsed {
   cmd: string | undefined;
   positional: string[];
   flags: Map<string, string | boolean>;
@@ -57,7 +62,7 @@ interface Parsed {
 // Flags that never take a value — the token after them stays positional.
 const BOOLEAN_FLAGS = new Set(["json", "help", "version", "force", "yes", "delete-data", "open"]);
 
-function parseArgv(argv: string[]): Parsed {
+export function parseArgv(argv: string[]): Parsed {
   const positional: string[] = [];
   const flags = new Map<string, string | boolean>();
   for (let i = 0; i < argv.length; i++) {
@@ -92,7 +97,7 @@ function flagNum(p: Parsed, name: string): number | undefined {
   const v = flagStr(p, name);
   if (v === undefined) return undefined;
   const n = parseInt(v, 10);
-  if (Number.isNaN(n)) throw new CliError(`--${name} expects a number, got "${v}"`, 2);
+  if (Number.isNaN(n) || n < 0) throw new CliError(`--${name} expects a non-negative number, got "${v}"`, 2);
   return n;
 }
 
@@ -100,20 +105,7 @@ function flagBool(p: Parsed, name: string): boolean {
   return p.flags.has(name);
 }
 
-async function main(): Promise<void> {
-  const p = parseArgv(process.argv.slice(2));
-  const json = flagBool(p, "json");
-
-  if (flagBool(p, "version")) {
-    process.stdout.write(VERSION + "\n");
-    return;
-  }
-  if (!p.cmd || flagBool(p, "help") || p.cmd === "help") {
-    process.stdout.write(HELP);
-    if (!p.cmd) process.exitCode = 2;
-    return;
-  }
-
+async function dispatch(p: Parsed, json: boolean): Promise<void> {
   switch (p.cmd) {
     case "setup":
       await cmdSetup({
@@ -163,6 +155,9 @@ async function main(): Promise<void> {
     case "config":
       cmdConfig({ json });
       break;
+    case "update":
+      await cmdUpdate(VERSION, { json });
+      break;
     default:
       fail(`unknown command: ${p.cmd}`);
       process.stderr.write(HELP);
@@ -170,12 +165,37 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((e: unknown) => {
-  if (e instanceof CliError) {
-    fail(e.message);
-    process.exitCode = e.exitCode;
-  } else {
-    fail(e instanceof Error ? (isTty ? e.stack ?? e.message : e.message) : String(e));
-    process.exitCode = 1;
+async function main(): Promise<void> {
+  const p = parseArgv(process.argv.slice(2));
+  const json = flagBool(p, "json");
+
+  if (flagBool(p, "version")) {
+    process.stdout.write(VERSION + "\n");
+    return;
   }
-});
+  if (!p.cmd || flagBool(p, "help") || p.cmd === "help") {
+    process.stdout.write(HELP);
+    if (!p.cmd) process.exitCode = 2;
+    return;
+  }
+
+  try {
+    await dispatch(p, json);
+  } finally {
+    await maybeNotifyUpdate(VERSION, p.cmd, json);
+  }
+}
+
+// Invoked by src/cli/main.ts (the build entrypoint); importing this module —
+// as tests do for parseArgv — never executes a command.
+export function run(): void {
+  main().catch((e: unknown) => {
+    if (e instanceof CliError) {
+      fail(e.message);
+      process.exitCode = e.exitCode;
+    } else {
+      fail(e instanceof Error ? (isTty ? e.stack ?? e.message : e.message) : String(e));
+      process.exitCode = 1;
+    }
+  });
+}

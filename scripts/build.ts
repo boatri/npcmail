@@ -20,7 +20,7 @@ await build({
 });
 
 await build({
-  entryPoints: ["src/cli/index.ts"],
+  entryPoints: ["src/cli/main.ts"],
   outfile: "dist/cli.js",
   bundle: true,
   format: "esm",

@@ -1,6 +1,6 @@
 {
   "name": "npcmail",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Throwaway email identities on your own domain — NPCs with inboxes, built for AI agents. Self-hosted on Cloudflare in one command.",
   "license": "MIT",
   "author": "Ivan Boatri",
