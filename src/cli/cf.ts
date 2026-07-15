@@ -147,6 +147,23 @@ export class CfClient {
     return this.req("POST", `/accounts/${accountId}/d1/database/${dbId}/query`, { json: { sql } });
   }
 
+  // Permission probe: distinguishes "denied" from "endpoint says not-found/empty",
+  // so scope verification doesn't false-negative on fresh accounts.
+  async probeAccess(path: string): Promise<"ok" | "denied"> {
+    const res = await fetch(API + path, {
+      headers: { authorization: `Bearer ${this.token}` },
+    });
+    if (res.status === 401 || res.status === 403) return "denied";
+    const data = (await res.json().catch(() => null)) as CfEnvelope<unknown> | null;
+    if (data && !data.success) {
+      const authError = (data.errors ?? []).some(
+        (e) => e.code === 10000 || e.code === 9109 || /authentication|authorization/i.test(e.message),
+      );
+      if (authError) return "denied";
+    }
+    return "ok";
+  }
+
   async workerExists(accountId: string, name: string): Promise<boolean> {
     try {
       await this.req("GET", `/accounts/${accountId}/workers/scripts/${name}/settings`);

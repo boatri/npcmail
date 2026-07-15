@@ -10,6 +10,8 @@ export interface NpcmailConfig {
   accountId?: string;
   zoneId?: string;
   d1Id?: string;
+  /** Cloudflare API token saved by setup so teardown/upgrades don't re-ask */
+  cfToken?: string;
 }
 
 export function configDir(): string {

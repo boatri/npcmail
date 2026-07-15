@@ -4,7 +4,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { CfClient } from "./cf";
 import { SCHEMA_STATEMENTS } from "../shared/schema";
-import { readConfigFile, writeConfig, configPath, type NpcmailConfig } from "./config";
+import { readConfigFile, writeConfig, type NpcmailConfig } from "./config";
+import { promptForToken, verifyTokenScopes } from "./token";
 import { step, ok, warn, die, printJson, bold, cyan } from "./output";
 
 export interface SetupFlags {
@@ -25,25 +26,24 @@ export async function cmdSetup(flags: SetupFlags): Promise<void> {
   const domain = flags.domain?.toLowerCase();
   if (!domain) die("--domain is required (a domain on your Cloudflare account, e.g. --domain example.com)", 2);
 
-  const cfToken = process.env.CLOUDFLARE_API_TOKEN ?? process.env.CF_API_TOKEN;
+  // Token resolution: flag/env → saved config → interactive browser flow.
+  const priorCfg = readConfigFile();
+  let cfToken = process.env.CLOUDFLARE_API_TOKEN ?? process.env.CF_API_TOKEN ?? priorCfg?.cfToken;
   if (!cfToken) {
-    die(
-      "CLOUDFLARE_API_TOKEN env var is required.\n" +
-        "Create a token at dash.cloudflare.com → My Profile → API Tokens → Create Custom Token with:\n" +
-        "  Account → Workers Scripts → Edit\n" +
-        "  Account → D1 → Edit\n" +
-        "  Account → Email Routing Addresses → Edit\n" +
-        "  Zone → Email Routing Rules → Edit   (your domain)\n" +
-        "  Zone → DNS → Edit                   (your domain)\n" +
-        "  Zone → Zone → Read                  (your domain)",
-      2,
-    );
+    if (!process.stdin.isTTY) {
+      die(
+        "no Cloudflare API token available (CLOUDFLARE_API_TOKEN env, or saved config).\n" +
+          "Non-interactive session detected. Get a one-click token-creation URL with:\n" +
+          "  npcmail token-url --json\n" +
+          "have the user create the token there, then re-run setup with CLOUDFLARE_API_TOKEN set.",
+        2,
+      );
+    }
+    cfToken = await promptForToken(domain);
   }
 
   const cf = new CfClient(cfToken);
-
-  step(`verifying Cloudflare API token`);
-  await cf.verifyToken();
+  await verifyTokenScopes(cf, domain);
 
   step(`looking up zone ${bold(domain)}`);
   const zone = await cf.findZone(domain);
@@ -98,9 +98,10 @@ export async function cmdSetup(flags: SetupFlags): Promise<void> {
   // ---- API token for the service --------------------------------------------
   // Reuse the token from an existing config for the same domain so previously
   // configured clients keep working across re-runs.
-  const prior = readConfigFile();
   const apiToken =
-    prior && prior.domain === domain && prior.token ? prior.token : randomBytes(32).toString("hex");
+    priorCfg && priorCfg.domain === domain && priorCfg.token
+      ? priorCfg.token
+      : randomBytes(32).toString("hex");
 
   // ---- worker ----------------------------------------------------------------
   step(`deploying worker ${bold(flags.workerName)}`);
@@ -157,6 +158,7 @@ export async function cmdSetup(flags: SetupFlags): Promise<void> {
     accountId,
     zoneId: zone.id,
     d1Id: db.uuid,
+    cfToken,
   };
   const cfgPath = writeConfig(cfg);
 
@@ -194,8 +196,8 @@ export async function cmdTeardown(flags: TeardownFlags): Promise<void> {
   if (!cfg?.zoneId || !cfg.accountId || !cfg.workerName) {
     die("no npcmail config found (nothing to tear down). Config is created by `npcmail setup`.", 3);
   }
-  const cfToken = process.env.CLOUDFLARE_API_TOKEN ?? process.env.CF_API_TOKEN;
-  if (!cfToken) die("CLOUDFLARE_API_TOKEN env var is required for teardown", 2);
+  const cfToken = process.env.CLOUDFLARE_API_TOKEN ?? process.env.CF_API_TOKEN ?? cfg.cfToken;
+  if (!cfToken) die("no Cloudflare API token (CLOUDFLARE_API_TOKEN env or saved config) for teardown", 2);
   if (!flags.yes) {
     die(
       `teardown will disable the ${cfg.domain} catch-all, delete the ${cfg.workerName} worker` +

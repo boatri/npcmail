@@ -2,6 +2,7 @@
 // npcmail — throwaway email identities on your own domain, built for AI agents.
 import { CliError, fail, isTty } from "./output";
 import { cmdSetup, cmdTeardown } from "./setup";
+import { cmdTokenUrl } from "./token";
 import { cmdNew, cmdLs, cmdRm, cmdInbox, cmdRead, cmdOtp, cmdStatus, cmdConfig } from "./commands";
 
 declare const NPCMAIL_VERSION: string;
@@ -12,9 +13,12 @@ const HELP = `npcmail v${VERSION} — throwaway email identities on your own dom
 USAGE
   npcmail <command> [args] [flags]
 
-SETUP (one-time, needs CLOUDFLARE_API_TOKEN)
+SETUP (one-time)
   setup --domain <domain>     provision everything on your Cloudflare account
         [--worker-name npcmail] [--retention-days 30] [--force]
+        (no CLOUDFLARE_API_TOKEN? setup opens a prefilled token-creation
+         page in your browser and prompts for the result — one approval)
+  token-url [--open]          print/open the prefilled Cloudflare token URL
   teardown [--delete-data] --yes   remove what setup created
 
 IDENTITIES
@@ -51,7 +55,7 @@ interface Parsed {
 }
 
 // Flags that never take a value — the token after them stays positional.
-const BOOLEAN_FLAGS = new Set(["json", "help", "version", "force", "yes", "delete-data"]);
+const BOOLEAN_FLAGS = new Set(["json", "help", "version", "force", "yes", "delete-data", "open"]);
 
 function parseArgv(argv: string[]): Parsed {
   const positional: string[] = [];
@@ -122,6 +126,9 @@ async function main(): Promise<void> {
       break;
     case "teardown":
       await cmdTeardown({ deleteData: flagBool(p, "delete-data"), yes: flagBool(p, "yes"), json });
+      break;
+    case "token-url":
+      cmdTokenUrl({ json, open: flagBool(p, "open") });
       break;
     case "new":
       await cmdNew({ first: flagStr(p, "first"), last: flagStr(p, "last"), label: flagStr(p, "label"), json });

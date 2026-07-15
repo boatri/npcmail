@@ -29,20 +29,31 @@ agent-first.
 ## Setup (one command)
 
 Requirements: a domain on Cloudflare **that is not used for email** (npcmail takes over all
-inbound mail via a catch-all), and a Cloudflare API token (scopes below).
+inbound mail via a catch-all).
 
 ```bash
-CLOUDFLARE_API_TOKEN=... npx npcmail setup --domain yourdomain.com
+npx npcmail setup --domain yourdomain.com
 ```
 
-This provisions everything: a D1 database, the Worker (bundled with the CLI — no wrangler,
+With no Cloudflare token available, setup starts a one-time OAuth-style flow: it opens the
+Cloudflare dashboard with the custom-token form **prefilled with exactly the 5 permissions
+npcmail needs** — you review, click *Continue to summary* → *Create Token*, paste it back,
+and forget about it (it's saved to config; you're never asked again). Non-interactive
+sessions (AI agents) get the same URL from `npcmail token-url --json` to hand to their human.
+
+Already have a token? `CLOUDFLARE_API_TOKEN=... npx npcmail setup --domain yourdomain.com`
+works too. Either way, setup verifies each required permission with live probes before
+touching anything, and tells you precisely which one is missing if any.
+
+Setup provisions everything: a D1 database, the Worker (bundled with the CLI — no wrangler,
 no repo checkout), Email Routing MX/SPF records, a catch-all route to the Worker, and a
-generated API token. Config lands in `~/.config/npcmail/config.json`. Re-running setup is
-safe (idempotent) and is also how you upgrade the Worker after a new npcmail release.
+generated service token. Config lands in `~/.config/npcmail/config.json`. Re-running setup
+is safe (idempotent) and is also how you upgrade the Worker after a new npcmail release.
 
 ### API token scopes
 
-Create at dash.cloudflare.com → My Profile → API Tokens → *Create Custom Token*:
+The prefilled form (and manual creation at dash.cloudflare.com → My Profile → API Tokens)
+uses this minimal set:
 
 | Scope | Permission | Level |
 |---|---|---|
@@ -51,6 +62,9 @@ Create at dash.cloudflare.com → My Profile → API Tokens → *Create Custom T
 | Zone (your domain) | DNS | Edit |
 | Zone (your domain) | Email Routing Rules | Edit |
 | Zone (your domain) | Zone | Read |
+
+Tokens are needed only by `setup`/`teardown` — day-to-day commands authenticate to your
+worker with the service token from the config file and never touch the Cloudflare API.
 
 ### Safety: what if the domain already has things on it?
 
