@@ -16,6 +16,7 @@ export class ApiClient {
 
   private async req<T>(method: string, path: string, body?: unknown): Promise<T> {
     const url = this.cfg.url.replace(/\/+$/, "") + path;
+    if (process.env.NPCMAIL_DEBUG) process.stderr.write(`npcmail-debug: ${method} ${url}\n`);
     let res: Response;
     try {
       res = await fetch(url, {

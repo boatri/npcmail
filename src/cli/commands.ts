@@ -138,7 +138,7 @@ export async function cmdRead(target: string | undefined, flags: { json: boolean
       `${bold("Subject:")} ${msg.subject ?? "(no subject)"}\n` +
       (msg.otpCode ? `${bold("Code:")}    ${green(msg.otpCode)}\n` : "") +
       (msg.otpLink ? `${bold("Link:")}    ${cyan(msg.otpLink)}\n` : "") +
-      `\n${msg.textBody ?? dim("(no text body — HTML only, use --json for htmlBody)")}\n`,
+      `\n${msg.textBody?.trim() || msg.textFromHtml || dim("(empty body)")}\n`,
   );
 }
 
@@ -158,7 +158,17 @@ export async function cmdOtp(
     return;
   }
   if (!res.found) {
-    die(`no verification code or link found for ${client.normalizeAddress(address)}${flags.wait ? ` after ${flags.wait}s` : ""}`, 4);
+    die(`no message arrived for ${client.normalizeAddress(address)}${flags.wait ? ` after ${flags.wait}s` : ""}`, 4);
+  }
+  if (!res.code && !res.link) {
+    // A message DID arrive — the heuristics just couldn't spot a code in it.
+    // Point the caller at the content instead of pretending nothing happened.
+    die(
+      `message ${res.messageId} arrived ("${res.subject ?? "no subject"}" from ${res.from ?? "?"}) ` +
+        `but no code/link was auto-detected.\nRead it and extract manually:\n` +
+        `  npcmail read ${res.messageId}   (or re-run with --json for the full message)`,
+      4,
+    );
   }
   // Bare value on stdout so agents/scripts can do CODE=$(npcmail otp jane.doe --wait 60)
   process.stdout.write((res.code ?? res.link ?? "") + "\n");

@@ -1,5 +1,5 @@
 import PostalMime from "postal-mime";
-import { extractOtp } from "../shared/otp";
+import { extractOtp, htmlToText } from "../shared/otp";
 import { generateName, capitalize } from "../shared/names";
 import type { Identity, MessageFull, MessageSummary, OtpResult } from "../shared/types";
 
@@ -94,7 +94,13 @@ function rowToSummary(r: MessageRow): MessageSummary {
 }
 
 function rowToFull(r: MessageRow): MessageFull {
-  return { ...rowToSummary(r), to: r.to_addr, textBody: r.text_body, htmlBody: r.html_body };
+  return {
+    ...rowToSummary(r),
+    to: r.to_addr,
+    textBody: r.text_body,
+    htmlBody: r.html_body,
+    ...(!r.text_body?.trim() && r.html_body ? { textFromHtml: htmlToText(r.html_body) } : {}),
+  };
 }
 
 function nowIso(): string {
@@ -315,20 +321,18 @@ async function handleApi(req: Request, env: Env): Promise<Response> {
       const wait = Math.min(parseInt(url.searchParams.get("wait") ?? "0", 10), 25);
       const deadline = Date.now() + wait * 1000;
 
+      // The heuristic extraction is a hint, not a gate: return as soon as ANY
+      // qualifying message exists (preferring one with an extracted code/link)
+      // and include the full message so the caller can extract what the
+      // heuristics missed.
+      const sinceCond = since ? "AND received_at > ?" : "";
+      const withOtp = `SELECT * FROM messages WHERE address = ? ${sinceCond} AND (otp_code IS NOT NULL OR otp_link IS NOT NULL) ORDER BY received_at DESC LIMIT 1`;
+      const anyMsg = `SELECT * FROM messages WHERE address = ? ${sinceCond} ORDER BY received_at DESC LIMIT 1`;
+      const bindings = since ? [address, since] : [address];
+
       do {
-        const row = since
-          ? await env.DB.prepare(
-              `SELECT * FROM messages WHERE address = ? AND received_at > ? AND (otp_code IS NOT NULL OR otp_link IS NOT NULL)
-               ORDER BY received_at DESC LIMIT 1`,
-            )
-              .bind(address, since)
-              .first<MessageRow>()
-          : await env.DB.prepare(
-              `SELECT * FROM messages WHERE address = ? AND (otp_code IS NOT NULL OR otp_link IS NOT NULL)
-               ORDER BY received_at DESC LIMIT 1`,
-            )
-              .bind(address)
-              .first<MessageRow>();
+        let row = await env.DB.prepare(withOtp).bind(...bindings).first<MessageRow>();
+        row ??= await env.DB.prepare(anyMsg).bind(...bindings).first<MessageRow>();
         if (row) {
           const result: OtpResult = {
             found: true,
@@ -338,6 +342,7 @@ async function handleApi(req: Request, env: Env): Promise<Response> {
             from: row.from_addr,
             subject: row.subject,
             receivedAt: row.received_at,
+            message: rowToFull(row),
           };
           return json(result);
         }

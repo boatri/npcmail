@@ -100,6 +100,20 @@ CODE=$(npcmail otp "$ADDRESS" --wait 120)     # blocks until the code arrives
   `signup-acme@yourdomain.com` on the fly without calling `new` first; the identity
   appears automatically on first message (`ls` marks these `implicit`).
 - `otp` prints the bare code (or verification link if there's no code) on stdout.
+- **The heuristics are a hint, not a gate.** `otp` returns as soon as *any* new message
+  arrives; with `--json` the full message is always included (`message.textBody` /
+  `message.textFromHtml`), so if `code` is null the agent reads the content and extracts
+  the code itself — the reliable path is always one call away:
+
+  ```jsonc
+  // npcmail otp jane.moreau --since $TS --wait 120 --json
+  {
+    "found": true,          // a message arrived
+    "code": "847291",       // heuristic hit — null if it missed
+    "link": null,
+    "message": { "subject": "...", "textBody": "...", "textFromHtml": "..." }
+  }
+  ```
 - Exit codes: `0` ok · `1` error · `2` usage · `3` not found · `4` nothing arrived before `--wait`.
 - Stateless mode (no config file): set `NPCMAIL_URL`, `NPCMAIL_TOKEN`, `NPCMAIL_DOMAIN`.
 
