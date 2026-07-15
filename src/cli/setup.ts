@@ -7,7 +7,8 @@ import { SCHEMA_STATEMENTS } from "../shared/schema";
 import { CfClient } from "./cf";
 import { readConfigFile, writeConfig, type NpcmailConfig } from "./config";
 import { promptForToken, verifyTokenScopes } from "./token";
-import { step, ok, warn, die, printJson, bold, cyan } from "./output";
+import { die, printJson, bold, cyan } from "./output";
+import { initUi, uiIntro, uiOutro, uiStep, uiOk, uiWarn, uiSpinner, uiNote } from "./ui";
 
 export interface SetupFlags {
   domain?: string;
@@ -37,7 +38,7 @@ async function resolveCloudflareToken(domain: string, priorCfg: NpcmailConfig | 
 // npcmail takes over ALL email for the domain (catch-all). If the domain
 // already receives real email, proceeding would break it — refuse loudly.
 async function assertDomainSafeToTakeOver(cf: CfClient, zone: Zone, flags: SetupFlags): Promise<void> {
-  step(`preflight: checking the domain is safe to take over`);
+  uiStep(`preflight: checking the domain is safe to take over`);
 
   const mx = await cf.listMxRecords(zone.id);
   const foreignMx = mx.filter((r) => !/mx\d*\.cloudflare\.net$/i.test(r.content));
@@ -51,7 +52,7 @@ async function assertDomainSafeToTakeOver(cf: CfClient, zone: Zone, flags: Setup
           `or re-run with --force if you are certain this email setup is unused.`,
       );
     }
-    warn(`--force: existing MX records will be replaced by Cloudflare Email Routing`);
+    uiWarn(`--force: existing MX records will be replaced by Cloudflare Email Routing`);
   }
 
   // The safety decision must not silently pass when the read fails.
@@ -67,7 +68,7 @@ async function assertDomainSafeToTakeOver(cf: CfClient, zone: Zone, flags: Setup
           `Fix the token/API issue, or re-run with --force to skip the check.`,
       );
     }
-    warn(`--force: skipping catch-all safety check (read failed)`);
+    uiWarn(`--force: skipping catch-all safety check (read failed)`);
     return;
   }
 
@@ -81,16 +82,16 @@ async function assertDomainSafeToTakeOver(cf: CfClient, zone: Zone, flags: Setup
           `npcmail needs the catch-all. Re-run with --force to replace it, or use another domain.`,
       );
     }
-    warn(`--force: existing catch-all rule will be replaced`);
+    uiWarn(`--force: existing catch-all rule will be replaced`);
   }
 }
 
 async function ensureDatabase(cf: CfClient, accountId: string): Promise<{ uuid: string }> {
-  step(`ensuring D1 database ${bold("npcmail")}`);
+  uiStep(`ensuring D1 database ${bold("npcmail")}`);
   const existing = (await cf.listD1(accountId)).find((d) => d.name === "npcmail");
   const db = existing ?? (await cf.createD1(accountId, "npcmail"));
-  if (existing) step(`reusing existing D1 database (${db.uuid})`);
-  step(`applying schema`);
+  if (existing) uiStep(`reusing existing D1 database (${db.uuid})`);
+  uiStep(`applying schema`);
   for (const stmt of SCHEMA_STATEMENTS) {
     await cf.d1Query(accountId, db.uuid, stmt);
   }
@@ -119,7 +120,7 @@ async function deployWorker(
   dbId: string,
   flags: SetupFlags,
 ): Promise<string> {
-  step(`deploying worker ${bold(flags.workerName)}`);
+  uiStep(`deploying worker ${bold(flags.workerName)}`);
   await cf.uploadWorker(accountId, flags.workerName, loadWorkerBundle(), [
     { type: "d1", name: "DB", id: dbId },
     { type: "secret_text", name: "API_TOKEN", text: apiToken },
@@ -127,7 +128,7 @@ async function deployWorker(
     { type: "plain_text", name: "RETENTION_DAYS", text: String(flags.retentionDays) },
   ]);
 
-  step(`enabling workers.dev URL`);
+  uiStep(`enabling workers.dev URL`);
   const subdomain = await cf.getWorkersSubdomain(accountId, domain.split(".")[0] ?? "npcmail");
   await cf.enableWorkerSubdomain(accountId, flags.workerName);
   return `https://${flags.workerName}.${subdomain}.workers.dev`;
@@ -136,28 +137,33 @@ async function deployWorker(
 async function ensureEmailRouting(cf: CfClient, zone: Zone, workerName: string): Promise<void> {
   const routing = await cf.emailRoutingStatus(zone.id).catch(() => ({ enabled: false }));
   if (!routing.enabled) {
-    step(`enabling Email Routing on ${zone.name} (adds MX + SPF records)`);
+    uiStep(`enabling Email Routing on ${zone.name} (adds MX + SPF records)`);
     await cf.enableEmailRouting(zone.id);
   } else {
-    step(`Email Routing already enabled`);
+    uiStep(`Email Routing already enabled`);
   }
-  step(`pointing catch-all at the worker`);
+  uiStep(`pointing catch-all at the worker`);
   await cf.setCatchAllToWorker(zone.id, workerName);
 }
 
 async function waitForHealth(url: string, apiToken: string): Promise<boolean> {
-  step(`verifying deployment (worker may take a few seconds to propagate)`);
+  const spin = uiSpinner();
+  spin.start(`verifying deployment (worker may take a few seconds to propagate)`);
   for (let i = 0; i < 20; i++) {
     try {
       const res = await fetch(`${url}/v1/health`, {
         headers: { authorization: `Bearer ${apiToken}` },
       });
-      if (res.ok) return true;
+      if (res.ok) {
+        spin.stop(`deployment verified`);
+        return true;
+      }
     } catch {
       // propagation in progress
     }
     await sleep(3000);
   }
+  spin.stop(`health check did not pass yet`);
   return false;
 }
 
@@ -165,12 +171,14 @@ export async function cmdSetup(flags: SetupFlags): Promise<void> {
   const domain = flags.domain?.toLowerCase();
   if (!domain) die("--domain is required (a domain on your Cloudflare account, e.g. --domain example.com)", 2);
 
+  initUi(!flags.json);
+  uiIntro(`npcmail setup — ${domain}`);
   const priorCfg = readConfigFile();
   const cfToken = await resolveCloudflareToken(domain, priorCfg);
   const cf = new CfClient(cfToken);
   await verifyTokenScopes(cf, domain);
 
-  step(`looking up zone ${bold(domain)}`);
+  uiStep(`looking up zone ${bold(domain)}`);
   const zone = await cf.findZone(domain);
 
   await assertDomainSafeToTakeOver(cf, zone, flags);
@@ -180,7 +188,7 @@ export async function cmdSetup(flags: SetupFlags): Promise<void> {
   await ensureEmailRouting(cf, zone, flags.workerName);
   const healthy = await waitForHealth(url, apiToken);
   if (!healthy) {
-    warn(`worker deployed but ${url}/v1/health did not respond yet; it may need another minute`);
+    uiWarn(`worker deployed but ${url}/v1/health did not respond yet; it may need another minute`);
   }
 
   const cfgPath = writeConfig({
@@ -194,19 +202,19 @@ export async function cmdSetup(flags: SetupFlags): Promise<void> {
     cfToken,
   });
 
-  ok(`npcmail is live on ${bold(domain)}`);
-  ok(`API: ${cyan(url)}`);
-  ok(`config written to ${cfgPath} (contains the API token)`);
+  uiOk(`API: ${cyan(url)}`);
+  uiOk(`config written to ${cfgPath} (contains the API token)`);
 
   if (flags.json) {
     printJson({ ok: true, domain, url, workerName: flags.workerName, d1Id: db.uuid, configPath: cfgPath, healthy });
-  } else {
-    process.stdout.write(
-      `\nTry it:\n` +
-        `  npcmail new                     # create an identity\n` +
-        `  npcmail otp <address> --wait 60 # wait for a verification code\n`,
-    );
+    return;
   }
+  uiNote(
+    `npcmail new                     # create an identity\n` +
+      `npcmail otp <address> --wait 60 # wait for a verification code`,
+    "Try it",
+  );
+  uiOutro(`npcmail is live on ${bold(domain)}`);
 }
 
 export interface TeardownFlags {
@@ -231,15 +239,20 @@ export async function cmdTeardown(flags: TeardownFlags): Promise<void> {
     );
   }
 
+  initUi(!flags.json);
+  uiIntro(`npcmail teardown — ${cfg.domain}`);
   const cf = new CfClient(cfToken);
-  step(`disabling catch-all on ${cfg.domain}`);
-  await cf.disableCatchAll(cfg.zoneId).catch((e) => warn(`could not disable catch-all: ${e.message}`));
-  step(`deleting worker ${cfg.workerName}`);
-  await cf.deleteWorker(cfg.accountId, cfg.workerName).catch((e) => warn(`could not delete worker: ${e.message}`));
+  uiStep(`disabling catch-all on ${cfg.domain}`);
+  await cf.disableCatchAll(cfg.zoneId).catch((e) => uiWarn(`could not disable catch-all: ${e.message}`));
+  uiStep(`deleting worker ${cfg.workerName}`);
+  await cf.deleteWorker(cfg.accountId, cfg.workerName).catch((e) => uiWarn(`could not delete worker: ${e.message}`));
   if (flags.deleteData && cfg.d1Id) {
-    step(`deleting D1 database`);
-    await cf.deleteD1(cfg.accountId, cfg.d1Id).catch((e) => warn(`could not delete D1: ${e.message}`));
+    uiStep(`deleting D1 database`);
+    await cf.deleteD1(cfg.accountId, cfg.d1Id).catch((e) => uiWarn(`could not delete D1: ${e.message}`));
   }
-  ok(`teardown complete. Email Routing itself was left enabled (harmless); disable it in the dashboard if you want.`);
-  if (flags.json) printJson({ ok: true, domain: cfg.domain, dataDeleted: flags.deleteData });
+  if (flags.json) {
+    printJson({ ok: true, domain: cfg.domain, dataDeleted: flags.deleteData });
+    return;
+  }
+  uiOutro(`teardown complete — Email Routing itself was left enabled (harmless); disable it in the dashboard if you want`);
 }

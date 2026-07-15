@@ -3,9 +3,10 @@
 // the cache from a previous run for the notice, and refreshes the cache in
 // the background at most once per day.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import boxen from "boxen";
 import { die, printJson, dim, bold, ok, step } from "./output";
 
 const REGISTRY_DIST_TAGS = "https://registry.npmjs.org/-/package/npcmail/dist-tags";
@@ -80,7 +81,15 @@ export function maybeNotifyUpdate(currentVersion: string, command: string | unde
   const cache = readCache();
   if (cache && newerThan(cache.latest, currentVersion)) {
     process.stderr.write(
-      dim(`\nnpcmail ${currentVersion} → ${cache.latest} available\n`) + dim(`run: npcmail update\n`),
+      "\n" +
+        boxen(`Update available ${dim(currentVersion)} → ${bold(cache.latest)}\nRun ${bold("npcmail update")}`, {
+          padding: { top: 0, bottom: 0, left: 2, right: 2 },
+          margin: { top: 0, bottom: 1, left: 0, right: 0 },
+          borderStyle: "round",
+          borderColor: "yellow",
+          textAlignment: "center",
+        }) +
+        "\n",
     );
   }
 

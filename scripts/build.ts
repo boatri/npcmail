@@ -25,8 +25,12 @@ await build({
   bundle: true,
   format: "esm",
   platform: "node",
-  target: "node18",
+  target: "node20",
   define: { NPCMAIL_VERSION: JSON.stringify(pkg.version) },
+  // CJS deps (commander, cli-table3) call require() — give the ESM bundle one.
+  banner: {
+    js: "#!/usr/bin/env node\nimport { createRequire as __npcmailCreateRequire } from 'node:module';\nconst require = __npcmailCreateRequire(import.meta.url);",
+  },
   legalComments: "none",
   minify: false,
 });

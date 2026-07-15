@@ -3,9 +3,9 @@
 // custom-token form. Flow: open the URL → user clicks Continue → Create Token
 // → pastes it back. One approval, stored in config, forgotten.
 import { spawn } from "node:child_process";
-import { createInterface } from "node:readline";
 import { CfClient } from "./cf";
-import { step, ok, warn, printJson, bold, cyan, die } from "./output";
+import { printJson, bold, cyan, die } from "./output";
+import { uiStep, uiOk, uiNote, uiPromptText } from "./ui";
 
 // Minimal scopes npcmail actually needs (the Email Routing *settings*
 // endpoints are not required — setup creates the MX/SPF records via DNS).
@@ -62,22 +62,17 @@ export function cmdTokenUrl(flags: { json: boolean; open: boolean }): void {
 
 export async function promptForToken(domain: string): Promise<string> {
   const url = tokenTemplateUrl();
-  step(`no CLOUDFLARE_API_TOKEN found — starting one-time browser flow`);
-  process.stderr.write(
-    `\n  Opening the Cloudflare dashboard with a prefilled token form.\n` +
-      `  Review it (optionally restrict Zone Resources to ${bold(domain)}),\n` +
-      `  then ${bold("Continue to summary → Create Token")} and paste the token below.\n\n` +
-      `  URL (in case the browser didn't open):\n  ${cyan(url)}\n\n`,
+  uiStep(`no CLOUDFLARE_API_TOKEN found — starting one-time browser flow`);
+  uiNote(
+    `Opening the Cloudflare dashboard with a prefilled token form.\n` +
+      `Review it (optionally restrict Zone Resources to ${domain}),\n` +
+      `then "Continue to summary" → "Create Token" and paste the token below.\n\n` +
+      `URL (in case the browser didn't open):\n${cyan(url)}`,
+    "One-time authorization",
   );
   openInBrowser(url);
 
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
-  const token = await new Promise<string>((resolve) => {
-    rl.question("Paste API token: ", (answer) => {
-      rl.close();
-      resolve(answer.trim());
-    });
-  });
+  const token = await uiPromptText("Paste API token", "cfut_…");
   if (!token) die("no token provided", 2);
   return token;
 }
@@ -85,7 +80,7 @@ export async function promptForToken(domain: string): Promise<string> {
 // Probe the token against every API surface setup needs, so a wrong
 // permission is caught here with a precise message — not mid-provisioning.
 export async function verifyTokenScopes(cf: CfClient, domain: string): Promise<void> {
-  step(`verifying token permissions`);
+  uiStep(`verifying token permissions`);
   await cf.verifyToken();
   const zone = await cf.findZone(domain); // zone:read
   const probes: Array<[string, string]> = [
@@ -104,5 +99,5 @@ export async function verifyTokenScopes(cf: CfClient, domain: string): Promise<v
         `Create a correct one with: npcmail token-url`,
     );
   }
-  ok(`token verified — all required permissions present`);
+  uiOk(`token verified — all required permissions present`);
 }

@@ -1,7 +1,19 @@
+import { convert } from "html-to-text";
 import { sleep } from "../../shared/constants";
 import type { MessageFull, MessageSummary } from "../../shared/types";
 import { die, printJson, table, bold, cyan, dim, green, isTty } from "../output";
 import { requireClient, fmtAge } from "./client";
+
+// Purpose-built email HTML → terminal text (tables, links, wrapping).
+function renderHtml(html: string): string {
+  return convert(html, {
+    wordwrap: 100,
+    selectors: [
+      { selector: "img", format: "skip" },
+      { selector: "a", options: { hideLinkHrefIfSameAsText: true } },
+    ],
+  }).trim();
+}
 
 export async function cmdInbox(
   address: string | undefined,
@@ -65,7 +77,7 @@ export async function cmdRead(target: string | undefined, flags: { json: boolean
       `${bold("Subject:")} ${msg.subject ?? "(no subject)"}\n` +
       (msg.otpCode ? `${bold("Code:")}    ${green(msg.otpCode)}\n` : "") +
       (msg.otpLink ? `${bold("Link:")}    ${cyan(msg.otpLink)}\n` : "") +
-      `\n${msg.textBody?.trim() || msg.textFromHtml || dim("(empty body)")}\n`,
+      `\n${msg.textBody?.trim() || (msg.htmlBody ? renderHtml(msg.htmlBody) : dim("(empty body)"))}\n`,
   );
 }
 
