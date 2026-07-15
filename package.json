@@ -1,0 +1,47 @@
+{
+  "name": "npcmail",
+  "version": "0.1.0",
+  "description": "Throwaway email identities on your own domain — NPCs with inboxes, built for AI agents. Self-hosted on Cloudflare in one command.",
+  "license": "MIT",
+  "author": "Ivan Boatri",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/boatri/npcmail.git"
+  },
+  "type": "module",
+  "bin": {
+    "npcmail": "dist/cli.js",
+    "npcm": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "bun run scripts/build.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.worker.json",
+    "test": "bun test",
+    "prepublishOnly": "bun run typecheck && bun test && bun run build"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "email",
+    "temporary-email",
+    "disposable-email",
+    "cloudflare",
+    "email-routing",
+    "ai-agents",
+    "test-accounts",
+    "otp",
+    "verification-codes"
+  ],
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250712.0",
+    "@types/node": "^26.1.1",
+    "bun-types": "^1.3.14",
+    "esbuild": "^0.25.5",
+    "postal-mime": "^2.4.3",
+    "typescript": "^5.8.0"
+  }
+}
