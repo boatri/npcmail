@@ -15,6 +15,7 @@ export interface SetupFlags {
   workerName: string;
   retentionDays: number;
   force: boolean;
+  strict: boolean;
   json: boolean;
 }
 
@@ -134,7 +135,7 @@ async function deployWorker(
   return `https://${flags.workerName}.${subdomain}.workers.dev`;
 }
 
-async function ensureEmailRouting(cf: CfClient, zone: Zone, workerName: string): Promise<void> {
+async function ensureEmailRouting(cf: CfClient, zone: Zone, flags: SetupFlags): Promise<void> {
   const routing = await cf.emailRoutingStatus(zone.id).catch(() => ({ enabled: false }));
   if (!routing.enabled) {
     uiStep(`enabling Email Routing on ${zone.name} (adds MX + SPF records)`);
@@ -142,8 +143,51 @@ async function ensureEmailRouting(cf: CfClient, zone: Zone, workerName: string):
   } else {
     uiStep(`Email Routing already enabled`);
   }
-  uiStep(`pointing catch-all at the worker`);
-  await cf.setCatchAllToWorker(zone.id, workerName);
+
+  uiStep(`adding DMARC record (p=reject — the domain never sends mail)`);
+  await cf.ensureDmarc(zone.id);
+
+  if (flags.strict) {
+    // Strict mode: disable the catch-all so Cloudflare rejects unknown
+    // recipients at SMTP (550). Existing identities need per-address rules
+    // or they'd stop receiving — migrate them before flipping the switch.
+    const identities = await migrateExistingIdentitiesToRules(cf, zone, flags);
+    uiStep(`disabling catch-all (unknown recipients will be rejected at SMTP)`);
+    await cf.disableCatchAll(zone.id);
+    if (identities > 0) uiStep(`provisioned rules for ${identities} existing identit${identities === 1 ? "y" : "ies"}`);
+  } else {
+    uiStep(`pointing catch-all at the worker`);
+    await cf.setCatchAllToWorker(zone.id, flags.workerName);
+  }
+}
+
+// When switching an existing deployment to strict mode, create a routing rule
+// for every identity that already exists so none of them go dark.
+async function migrateExistingIdentitiesToRules(cf: CfClient, zone: Zone, flags: SetupFlags): Promise<number> {
+  const cfg = readConfigFile();
+  if (!cfg?.url || !cfg.token) return 0; // fresh install — no identities yet
+  let addresses: string[];
+  try {
+    const res = await fetch(`${cfg.url}/v1/identities?limit=500`, {
+      headers: { authorization: `Bearer ${cfg.token}` },
+    });
+    if (!res.ok) return 0;
+    addresses = ((await res.json()) as { identities: Array<{ address: string }> }).identities.map((i) => i.address);
+  } catch {
+    return 0;
+  }
+  const existingRules = new Set(
+    (await cf.listAddressRules(zone.id)).flatMap((r) =>
+      r.matchers.filter((m) => m.type === "literal" && m.value).map((m) => m.value!.toLowerCase()),
+    ),
+  );
+  let created = 0;
+  for (const addr of addresses) {
+    if (existingRules.has(addr.toLowerCase())) continue;
+    await cf.createAddressRule(zone.id, addr, flags.workerName);
+    created++;
+  }
+  return created;
 }
 
 async function waitForHealth(url: string, apiToken: string): Promise<boolean> {
@@ -185,12 +229,13 @@ export async function cmdSetup(flags: SetupFlags): Promise<void> {
   const db = await ensureDatabase(cf, zone.account.id);
   const apiToken = resolveServiceToken(priorCfg, domain);
   const url = await deployWorker(cf, zone.account.id, domain, apiToken, db.uuid, flags);
-  await ensureEmailRouting(cf, zone, flags.workerName);
+  await ensureEmailRouting(cf, zone, flags);
   const healthy = await waitForHealth(url, apiToken);
   if (!healthy) {
     uiWarn(`worker deployed but ${url}/v1/health did not respond yet; it may need another minute`);
   }
 
+  const mode = flags.strict ? "strict" : "catch-all";
   const cfgPath = writeConfig({
     url,
     token: apiToken,
@@ -199,14 +244,16 @@ export async function cmdSetup(flags: SetupFlags): Promise<void> {
     accountId: zone.account.id,
     zoneId: zone.id,
     d1Id: db.uuid,
+    mode,
     cfToken,
   });
 
   uiOk(`API: ${cyan(url)}`);
+  uiOk(`mode: ${bold(mode)}${flags.strict ? " (unknown recipients rejected at SMTP)" : " (any address receives)"}`);
   uiOk(`config written to ${cfgPath} (contains the API token)`);
 
   if (flags.json) {
-    printJson({ ok: true, domain, url, workerName: flags.workerName, d1Id: db.uuid, configPath: cfgPath, healthy });
+    printJson({ ok: true, domain, url, mode, workerName: flags.workerName, d1Id: db.uuid, configPath: cfgPath, healthy });
     return;
   }
   uiNote(

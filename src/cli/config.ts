@@ -2,6 +2,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "n
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+export type NpcmailMode = "catch-all" | "strict";
+
 export interface NpcmailConfig {
   url: string;
   token: string;
@@ -10,6 +12,12 @@ export interface NpcmailConfig {
   accountId?: string;
   zoneId?: string;
   d1Id?: string;
+  /**
+   * "catch-all" (default): any address receives; identities are lazy.
+   * "strict": only provisioned addresses receive; unknown recipients are
+   * rejected at SMTP (550) so the domain doesn't look accept-all to verifiers.
+   */
+  mode?: NpcmailMode;
   /** Cloudflare API token saved by setup so teardown/upgrades don't re-ask */
   cfToken?: string;
 }

@@ -111,6 +111,21 @@ export class CfClient {
     }
   }
 
+  // npcmail domains never send mail, so p=reject is both correct and a
+  // positive "real, locked-down domain" signal to email validators.
+  async ensureDmarc(zoneId: string): Promise<void> {
+    const zoneName = (await this.req<{ name: string }>("GET", `/zones/${zoneId}`)).name;
+    const name = `_dmarc.${zoneName}`;
+    const existing = await this.req<Array<{ type: string; name: string }>>(
+      "GET",
+      `/zones/${zoneId}/dns_records?type=TXT&name=${encodeURIComponent(name)}`,
+    );
+    if (existing.length > 0) return;
+    await this.req("POST", `/zones/${zoneId}/dns_records`, {
+      json: { type: "TXT", name, content: '"v=DMARC1; p=reject; sp=reject; aspf=s"', ttl: 1 },
+    });
+  }
+
   getCatchAll(zoneId: string): Promise<{
     enabled: boolean;
     matchers: Array<{ type: string }>;
@@ -134,6 +149,47 @@ export class CfClient {
     return this.req("PUT", `/zones/${zoneId}/email/routing/rules/catch_all`, {
       json: { name: "catch-all", enabled: false, matchers: [{ type: "all" }], actions: [{ type: "drop" }] },
     });
+  }
+
+  // ---- strict mode: per-address routing rules ----
+  // In strict mode the catch-all is disabled, so Cloudflare rejects unknown
+  // recipients at SMTP RCPT time (550) — the domain doesn't look accept-all.
+  // Each provisioned address gets its own literal→worker rule (200/zone cap).
+
+  async listAddressRules(zoneId: string): Promise<
+    Array<{ id: string; name: string; matchers: Array<{ type: string; field?: string; value?: string }> }>
+  > {
+    const rules: Array<{ id: string; name: string; matchers: Array<{ type: string; field?: string; value?: string }> }> = [];
+    for (let page = 1; page <= 5; page++) {
+      const batch = await this.req<typeof rules>(
+        "GET",
+        `/zones/${zoneId}/email/routing/rules?per_page=50&page=${page}`,
+      );
+      rules.push(...batch);
+      if (batch.length < 50) break;
+    }
+    // literal-matcher rules only (exclude the catch-all "all" rule)
+    return rules.filter((r) => r.matchers.some((m) => m.type === "literal"));
+  }
+
+  createAddressRule(zoneId: string, address: string, workerName: string): Promise<{ id: string }> {
+    return this.req("POST", `/zones/${zoneId}/email/routing/rules`, {
+      json: {
+        name: `npcmail ${address}`,
+        enabled: true,
+        matchers: [{ type: "literal", field: "to", value: address }],
+        actions: [{ type: "worker", value: [workerName] }],
+      },
+    });
+  }
+
+  async deleteAddressRule(zoneId: string, address: string): Promise<boolean> {
+    const rule = (await this.listAddressRules(zoneId)).find((r) =>
+      r.matchers.some((m) => m.type === "literal" && m.value?.toLowerCase() === address.toLowerCase()),
+    );
+    if (!rule) return false;
+    await this.req("DELETE", `/zones/${zoneId}/email/routing/rules/${rule.id}`);
+    return true;
   }
 
   async listD1(accountId: string): Promise<Array<{ uuid: string; name: string }>> {

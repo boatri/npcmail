@@ -46,9 +46,41 @@ works too. Either way, setup verifies each required permission with live probes 
 touching anything, and tells you precisely which one is missing if any.
 
 Setup provisions everything: a D1 database, the Worker (bundled with the CLI — no wrangler,
-no repo checkout), Email Routing MX/SPF records, a catch-all route to the Worker, and a
-generated service token. Config lands in `~/.config/npcmail/config.json`. Re-running setup
+no repo checkout), Email Routing MX/SPF/DMARC records, a catch-all route to the Worker, and
+a generated service token. Config lands in `~/.config/npcmail/config.json`. Re-running setup
 is safe (idempotent) and is also how you upgrade the Worker after a new npcmail release.
+
+### Catch-all vs strict mode
+
+By default npcmail runs a **catch-all**: any address on the domain receives mail, and
+identities are created lazily. This is the simplest mode, but a strict email-verification
+service (some enterprise SaaS signups) does an SMTP `RCPT TO` probe, sees the domain accept
+*any* address, and flags it as "accept-all / risky" — rejecting your signup.
+
+**Strict mode** (`npcmail setup --domain yourdomain.com --strict`) fixes that. It disables
+the catch-all and instead creates one Cloudflare routing rule per identity, so:
+
+- provisioned addresses receive mail (routed to the Worker exactly as before), but
+- unknown addresses are **rejected at SMTP with `550 5.1.1`** — the domain looks like a
+  normal mailbox, not accept-all.
+
+Trade-offs (inherent to the approach):
+
+- **200 identities per domain** — Cloudflare's per-zone routing-rule cap. `npcmail rm` frees
+  a slot; `npcmail status` shows usage. Shard across domains if you need more.
+- **Eager provisioning + propagation delay** — an address only works once its rule exists,
+  and a freshly created rule takes **~1–2 minutes** to propagate through Cloudflare's MX.
+  `npcmail new` provisions the rule before returning the address (and its `--json` output
+  includes `propagationSeconds`), but create identities a little ahead of when you need them.
+- `new`/`rm` need the Cloudflare token (saved in config) to manage rules — catch-all mode
+  only ever talks to the Worker.
+
+Switching an existing deployment with `--strict` migrates all current identities to rules
+first, so none go dark. Re-running without `--strict` switches back to catch-all.
+
+Note: neither mode is a substitute for domain *reputation*, which is time-based. A brand-new
+domain may still be rejected by the strictest verifiers until it ages; strict mode + DMARC
+make the domain configuration as legitimate as possible, but can't manufacture history.
 
 ### API token scopes
 
@@ -165,7 +197,7 @@ GET    /v1/messages/{id}
 ## How it works
 
 ```
-inbound email → Cloudflare Email Routing (catch-all)
+inbound email → Cloudflare Email Routing (catch-all, or per-address rules in strict mode)
              → Email Worker (postal-mime parse, OTP extraction)
              → D1 (identities + messages)
              ← HTTP API ← CLI (npcmail / npcm)

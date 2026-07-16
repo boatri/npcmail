@@ -51,6 +51,7 @@ program
   .option("--domain <domain>", "domain on your Cloudflare account")
   .option("--worker-name <name>", "Cloudflare worker name", "npcmail")
   .option("--retention-days <days>", "days to keep messages (0 = forever)", nonNegativeInt, 30)
+  .option("--strict", "reject unknown recipients at SMTP so the domain doesn't look accept-all (200-identity cap)")
   .option("--force", "override the existing-email safety checks")
   .action(async (domainArg: string | undefined, opts, cmd: Command) => {
     await cmdSetup({
@@ -58,6 +59,7 @@ program
       workerName: opts.workerName,
       retentionDays: opts.retentionDays,
       force: Boolean(opts.force),
+      strict: Boolean(opts.strict),
       json: json(cmd),
     });
   });

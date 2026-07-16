@@ -9,9 +9,12 @@ export async function cmdStatus(flags: { json: boolean }): Promise<void> {
     printJson(health);
     return;
   }
+  const cfg = resolveConfig();
+  const mode = cfg?.mode ?? "catch-all";
   process.stdout.write(
     `${green("●")} ${bold("npcmail")} v${health.version} on ${cyan(health.domain)}\n` +
-      `  identities: ${health.identities}\n` +
+      `  mode:       ${mode}${mode === "strict" ? " (unknown recipients rejected at SMTP)" : ""}\n` +
+      `  identities: ${health.identities}${mode === "strict" ? ` / 200` : ""}\n` +
       `  messages:   ${health.messages}\n`,
   );
 }
