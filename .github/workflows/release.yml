@@ -19,21 +19,26 @@ jobs:
           node-version: "24"
       # Do NOT set registry-url on setup-node: it writes an .npmrc with a
       # placeholder ${NODE_AUTH_TOKEN}, and npm then uses that empty token
-      # instead of doing the OIDC exchange → 404. No token = OIDC path.
-      # OIDC trusted publishing also needs npm >= 11.5.1 (runner ships older).
-      - run: npm install -g npm@latest
+      # instead of doing the OIDC exchange. No token = OIDC path.
+      # Pin to the last 11.x (battle-tested OIDC path) rather than a days-old
+      # major; OIDC trusted publishing needs npm >= 11.5.1.
+      - run: npm install -g npm@11.18.0
       - run: bun install --frozen-lockfile
       - name: Diagnostics
         run: |
           echo "npm version: $(npm --version)"
-          echo "OIDC request URL present: ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}"
+          echo "OIDC request URL present:   ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}"
+          echo "OIDC request TOKEN present: ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+yes}"
       - name: Publish to npm (skips if version already published)
         run: |
           VERSION=$(node -p "require('./package.json').version")
           if npm view "npcmail@$VERSION" version >/dev/null 2>&1; then
             echo "npcmail@$VERSION already on npm — skipping publish"
           else
-            npm publish # prepublishOnly runs typecheck + tests + build
+            # --loglevel silly surfaces the OIDC token-exchange HTTP status/body
+            # so a rejected trusted-publisher claim is visible (npm/cli#9088).
+            # Safe while the exchange is failing (no token issued); removed once green.
+            npm publish --loglevel silly
           fi
       - run: gh release create "$GITHUB_REF_NAME" --generate-notes
         env:
