@@ -18,6 +18,9 @@ jobs:
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
+      # OIDC trusted publishing needs npm >= 11.5.1; the runner's bundled npm
+      # is older and would silently fall back to (empty) token auth → 404.
+      - run: npm install -g npm@latest
       - run: bun install --frozen-lockfile
       - name: Publish to npm (skips if version already published)
         run: |
