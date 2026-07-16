@@ -24,19 +24,15 @@ jobs:
       # major; OIDC trusted publishing needs npm >= 11.5.1.
       - run: npm install -g npm@11.18.0
       - run: bun install --frozen-lockfile
-      - name: Diagnostics
-        run: |
-          echo "npm version: $(npm --version)"
-          echo "OIDC request URL present:   ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}"
-          echo "OIDC request TOKEN present: ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+yes}"
       - name: Publish to npm (skips if version already published)
         run: |
           VERSION=$(node -p "require('./package.json').version")
           if npm view "npcmail@$VERSION" version >/dev/null 2>&1; then
             echo "npcmail@$VERSION already on npm — skipping publish"
           else
-            # --loglevel verbose surfaces the OIDC exchange status without
-            # dumping response bodies (npm/cli#9088 masks failures otherwise).
+            # verbose so an OIDC trusted-publishing failure is visible; npm masks
+            # it as ENEEDAUTH/404 at the default level (npm/cli#9088). verbose does
+            # not dump token bodies, so nothing sensitive reaches the public log.
             npm publish --loglevel verbose
           fi
       - run: gh release create "$GITHUB_REF_NAME" --generate-notes
