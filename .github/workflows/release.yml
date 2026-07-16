@@ -23,6 +23,10 @@ jobs:
       # OIDC trusted publishing also needs npm >= 11.5.1 (runner ships older).
       - run: npm install -g npm@latest
       - run: bun install --frozen-lockfile
+      - name: Diagnostics
+        run: |
+          echo "npm version: $(npm --version)"
+          echo "OIDC request URL present: ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}"
       - name: Publish to npm (skips if version already published)
         run: |
           VERSION=$(node -p "require('./package.json').version")
