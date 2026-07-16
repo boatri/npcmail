@@ -17,9 +17,10 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
-          registry-url: "https://registry.npmjs.org"
-      # OIDC trusted publishing needs npm >= 11.5.1; the runner's bundled npm
-      # is older and would silently fall back to (empty) token auth → 404.
+      # Do NOT set registry-url on setup-node: it writes an .npmrc with a
+      # placeholder ${NODE_AUTH_TOKEN}, and npm then uses that empty token
+      # instead of doing the OIDC exchange → 404. No token = OIDC path.
+      # OIDC trusted publishing also needs npm >= 11.5.1 (runner ships older).
       - run: npm install -g npm@latest
       - run: bun install --frozen-lockfile
       - name: Publish to npm (skips if version already published)
