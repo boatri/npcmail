@@ -21,12 +21,25 @@ export interface MessageSummary {
   receivedAt: string;
 }
 
-export interface MessageFull extends MessageSummary {
+export interface MailHeader {
+  name: string;
+  value: string;
+}
+
+export interface Threading {
+  messageId: string | null;
+  inReplyTo: string | null;
+  references: string | null;
+}
+
+export interface MessageFull extends MessageSummary, Threading {
   to: string | null;
   textBody: string | null;
   htmlBody: string | null;
   /** html converted to readable text; present only when textBody is empty */
   textFromHtml?: string | null;
+  /** every header in received order; null for messages stored before npcmail 0.5 */
+  headers: MailHeader[] | null;
 }
 
 export interface OtpResult {
@@ -39,7 +52,7 @@ export interface OtpResult {
   subject?: string | null;
   receivedAt?: string;
   /** the full message, so callers can extract what the heuristics missed */
-  message?: MessageFull;
+  message?: Omit<MessageFull, "headers">;
 }
 
 export interface HealthResult {

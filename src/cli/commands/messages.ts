@@ -50,8 +50,8 @@ export async function cmdInbox(
   process.stdout.write(table(rows, ["ID", "FROM", "SUBJECT", "OTP", "WHEN"]) + "\n");
 }
 
-export async function cmdRead(target: string | undefined, flags: { json: boolean }): Promise<void> {
-  if (!target) die("usage: npcmail read <address | message-id>", 2);
+export async function cmdRead(target: string | undefined, flags: { json: boolean; headers: boolean }): Promise<void> {
+  if (!target) die("usage: npcmail read <address | message-id> [--headers]", 2);
   const client = requireClient();
 
   let msg: MessageFull;
@@ -70,13 +70,28 @@ export async function cmdRead(target: string | undefined, flags: { json: boolean
     printJson(msg);
     return;
   }
+  const fields: Array<[string, string | null]> = [
+    ["From", msg.fromName ? `${msg.fromName} <${msg.from}>` : msg.from],
+    ["To", msg.to ?? msg.address],
+    ["Date", msg.receivedAt],
+    ["Subject", msg.subject ?? "(no subject)"],
+    ["Message-ID", msg.messageId],
+    ["In-Reply-To", msg.inReplyTo],
+    ["References", msg.references],
+    ["Code", msg.otpCode ? green(msg.otpCode) : null],
+    ["Link", msg.otpLink ? cyan(msg.otpLink) : null],
+  ];
+  const width = Math.max(...fields.map(([label]) => label.length)) + 2;
+  const summary = fields
+    .filter((f): f is [string, string] => Boolean(f[1]))
+    .map(([label, value]) => `${bold(`${label}:`.padEnd(width))}${value}\n`)
+    .join("");
+  const headers = flags.headers
+    ? `\n${msg.headers ? msg.headers.map((h) => `${dim(`${h.name}:`)} ${h.value}\n`).join("") : dim("(headers not stored for this message)\n")}`
+    : "";
   process.stdout.write(
-    `${bold("From:")}    ${msg.fromName ? `${msg.fromName} <${msg.from}>` : msg.from}\n` +
-      `${bold("To:")}      ${msg.to ?? msg.address}\n` +
-      `${bold("Date:")}    ${msg.receivedAt}\n` +
-      `${bold("Subject:")} ${msg.subject ?? "(no subject)"}\n` +
-      (msg.otpCode ? `${bold("Code:")}    ${green(msg.otpCode)}\n` : "") +
-      (msg.otpLink ? `${bold("Link:")}    ${cyan(msg.otpLink)}\n` : "") +
+    summary +
+      headers +
       `\n${msg.textBody?.trim() || (msg.htmlBody ? renderHtml(msg.htmlBody) : dim("(empty body)"))}\n`,
   );
 }

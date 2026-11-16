@@ -6,6 +6,8 @@ export const OTP_LONG_POLL_CAP_SECONDS = 25;
 // Routing accepts far larger messages, and no OTP needs a megabyte of HTML.
 export const MAX_BODY_BYTES = 262_144;
 
+export const MAX_HEADERS_BYTES = 65_536;
+
 export function appendDomain(input: string, domain: string): string {
   const s = input.trim().toLowerCase();
   return s.includes("@") ? s : `${s}@${domain}`;

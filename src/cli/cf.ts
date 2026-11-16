@@ -204,8 +204,11 @@ export class CfClient {
     return this.req("DELETE", `/accounts/${accountId}/d1/database/${dbId}`);
   }
 
-  async d1Query(accountId: string, dbId: string, sql: string): Promise<unknown> {
-    return this.req("POST", `/accounts/${accountId}/d1/database/${dbId}/query`, { json: { sql } });
+  async d1Query<Row = unknown>(accountId: string, dbId: string, sql: string): Promise<Row[]> {
+    const res = await this.req<Array<{ results: Row[] }>>("POST", `/accounts/${accountId}/d1/database/${dbId}/query`, {
+      json: { sql },
+    });
+    return res.flatMap((r) => r.results);
   }
 
   // Permission probe: distinguishes "denied" from "endpoint says not-found/empty",

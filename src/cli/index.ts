@@ -125,8 +125,9 @@ program
   .command("read")
   .description("show a full message (latest for an address, or by message id)")
   .argument("<target>", "address or message id")
-  .action(async (target: string, _opts, cmd: Command) => {
-    await cmdRead(target, { json: json(cmd) });
+  .option("--headers", "also print every received header (--json always includes them)")
+  .action(async (target: string, opts, cmd: Command) => {
+    await cmdRead(target, { json: json(cmd), headers: Boolean(opts.headers) });
   });
 
 program

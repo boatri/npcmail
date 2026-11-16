@@ -1,5 +1,6 @@
 import PostalMime, { type Email } from "postal-mime";
 import { MAX_BODY_BYTES } from "../shared/constants";
+import { fromParsed, fromRaw, type ReceivedHeaders } from "../shared/headers";
 import { capitalize } from "../shared/names";
 import { extractOtp } from "../shared/otp";
 import type { Env } from "./env";
@@ -13,11 +14,14 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+type ParsedMessage = Pick<Email, "text" | "html" | "subject" | "from"> & ReceivedHeaders;
+
 // A parse failure must never lose mail: fall back to headers-only storage so
 // the caller can at least see that something arrived and from whom.
-async function parseMessage(message: ForwardableEmailMessage): Promise<Pick<Email, "text" | "html" | "subject" | "from">> {
+async function parseMessage(message: ForwardableEmailMessage): Promise<ParsedMessage> {
   try {
-    return await PostalMime.parse(message.raw);
+    const email = await PostalMime.parse(message.raw);
+    return { ...email, ...fromParsed(email) };
   } catch (e) {
     console.error(`postal-mime parse failed for message to ${message.to}: ${e instanceof Error ? e.message : e}`);
     return {
@@ -25,6 +29,7 @@ async function parseMessage(message: ForwardableEmailMessage): Promise<Pick<Emai
       html: undefined,
       subject: message.headers.get("subject") ?? undefined,
       from: { name: "", address: message.from },
+      ...fromRaw(message.headers),
     };
   }
 }
@@ -51,8 +56,9 @@ export async function handleEmail(message: ForwardableEmailMessage, env: Env): P
   const otp = extractOtp(subject, textBody, htmlBody);
 
   await env.DB.prepare(
-    `INSERT INTO messages (id, address, from_addr, from_name, to_addr, subject, text_body, html_body, otp_code, otp_link, received_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO messages (id, address, from_addr, from_name, to_addr, subject, text_body, html_body, otp_code, otp_link,
+       message_id, in_reply_to, refs, headers, received_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       crypto.randomUUID(),
@@ -65,6 +71,10 @@ export async function handleEmail(message: ForwardableEmailMessage, env: Env): P
       htmlBody,
       otp.code,
       otp.link,
+      parsed.messageId,
+      parsed.inReplyTo,
+      parsed.references,
+      JSON.stringify(parsed.headers),
       nowIso(),
     )
     .run();

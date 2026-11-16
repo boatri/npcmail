@@ -1,5 +1,5 @@
 import { htmlToText } from "../shared/otp";
-import type { Identity, MessageFull, MessageSummary } from "../shared/types";
+import type { Identity, MailHeader, MessageFull, MessageSummary } from "../shared/types";
 
 export interface IdentityRow {
   address: string;
@@ -23,6 +23,10 @@ export interface MessageRow {
   html_body: string | null;
   otp_code: string | null;
   otp_link: string | null;
+  message_id: string | null;
+  in_reply_to: string | null;
+  refs: string | null;
+  headers: string | null;
   received_at: string;
 }
 
@@ -66,5 +70,9 @@ export function rowToFull(r: MessageRow): MessageFull {
     textBody: r.text_body,
     htmlBody: r.html_body,
     ...(!r.text_body?.trim() && r.html_body ? { textFromHtml: htmlToText(r.html_body) } : {}),
+    messageId: r.message_id,
+    inReplyTo: r.in_reply_to,
+    references: r.refs,
+    headers: r.headers ? (JSON.parse(r.headers) as MailHeader[]) : null,
   };
 }

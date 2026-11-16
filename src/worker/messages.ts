@@ -59,6 +59,7 @@ export async function handleOtp(address: string, url: URL, env: Env): Promise<Re
     let row = await env.DB.prepare(preferred.sql).bind(address, ...preferred.bindings).first<MessageRow>();
     row ??= await env.DB.prepare(fallback.sql).bind(address, ...fallback.bindings).first<MessageRow>();
     if (row) {
+      const { headers: _headers, ...message } = rowToFull(row);
       const result: OtpResult = {
         found: true,
         code: row.otp_code,
@@ -67,7 +68,7 @@ export async function handleOtp(address: string, url: URL, env: Env): Promise<Re
         from: row.from_addr,
         subject: row.subject,
         receivedAt: row.received_at,
-        message: rowToFull(row),
+        message,
       };
       return json(result);
     }

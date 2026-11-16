@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { sleep } from "../shared/constants";
-import { SCHEMA_STATEMENTS } from "../shared/schema";
+import { SCHEMA_STATEMENTS, addMissingColumns } from "../shared/schema";
 import { CfClient } from "./cf";
 import { readConfigFile, writeConfig, type NpcmailConfig } from "./config";
 import { promptForToken, verifyTokenScopes } from "./token";
@@ -94,6 +94,10 @@ async function ensureDatabase(cf: CfClient, accountId: string): Promise<{ uuid: 
   if (existing) uiStep(`reusing existing D1 database (${db.uuid})`);
   uiStep(`applying schema`);
   for (const stmt of SCHEMA_STATEMENTS) {
+    await cf.d1Query(accountId, db.uuid, stmt);
+  }
+  const columns = await cf.d1Query<{ name: string }>(accountId, db.uuid, `SELECT name FROM pragma_table_info('messages')`);
+  for (const stmt of addMissingColumns(columns.map((c) => c.name))) {
     await cf.d1Query(accountId, db.uuid, stmt);
   }
   return db;

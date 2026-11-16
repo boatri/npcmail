@@ -48,7 +48,8 @@ touching anything, and tells you precisely which one is missing if any.
 Setup provisions everything: a D1 database, the Worker (bundled with the CLI — no wrangler,
 no repo checkout), Email Routing MX/SPF/DMARC records, a catch-all route to the Worker, and
 a generated service token. Config lands in `~/.config/npcmail/config.json`. Re-running setup
-is safe (idempotent) and is also how you upgrade the Worker after a new npcmail release.
+is safe (idempotent) and is also how you upgrade the Worker (and migrate the D1 schema, keeping
+existing data) after a new npcmail release.
 
 ### Catch-all vs strict mode
 
@@ -122,7 +123,7 @@ IDENTITIES
 
 MAIL
   inbox <address> [--wait N] [--since ISO] [--limit N]   list messages
-  read  <address | message-id>                           full message
+  read  <address | message-id> [--headers]               full message
   otp   <address> [--wait N] [--since ISO]               verification code/link
 
 SERVICE
@@ -174,6 +175,12 @@ CODE=$(npcmail otp "$ADDRESS" --wait 120)     # blocks until the code arrives
 - `otp --wait` without `--since` only accepts messages received in the last 2 minutes,
   so a stale code from an earlier signup can never satisfy a fresh wait. Pass `--since`
   explicitly to control the window, or omit both to inspect the latest stored message.
+- **Replying in a thread.** `read` shows the received `Message-ID`, `In-Reply-To` and
+  `References`, and `read --headers` lists every header as received. `read --json` always
+  carries both (`messageId`, `inReplyTo`, `references`, `headers`), so a reply can set
+  `In-Reply-To: <messageId>` and `References: <references> <messageId>`. The value is the one
+  the recipient received, which can differ from what the sender's client recorded (Gmail
+  rewrites it on send). `otp --json` includes the threading fields but leaves out the header list.
 - Exit codes: `0` ok · `1` error · `2` usage · `3` not found · `4` nothing arrived before `--wait`.
 - Stateless mode (no config file): set `NPCMAIL_URL`, `NPCMAIL_TOKEN`, `NPCMAIL_DOMAIN`.
 
@@ -189,7 +196,7 @@ GET    /v1/identities/{address}
 DELETE /v1/identities/{address}
 GET    /v1/identities/{address}/messages?since=&limit=&full=1
 GET    /v1/identities/{address}/otp?since=&wait=25      (long-poll)
-GET    /v1/messages/{id}
+GET    /v1/messages/{id}                  (includes messageId, inReplyTo, references, headers)
 ```
 
 `Authorization: Bearer <token>` — the token is in `~/.config/npcmail/config.json`.
@@ -206,6 +213,10 @@ inbound email → Cloudflare Email Routing (catch-all, or per-address rules in s
 - OTP extraction runs at ingest: codes (`847291`, `123 456`, `7GX4KQ`) are matched near
   signal words with URL/year/price exclusions; verification links are scored above
   unsubscribe/social links. Both are stored per message.
+- Each message stores sender, recipient, subject, text and HTML bodies (256 KB each), the
+  extracted code/link, the threading headers (`Message-ID`, `In-Reply-To`, `References`), and
+  every header as received, in order (up to 64 KB). Attachments and the raw message are not
+  stored. Messages received before 0.5 have no headers.
 - Messages are pruned after 30 days by default (`setup --retention-days N`, `0` = keep forever).
 - Receive-only by design: npcmail never sends email, so your domain can't be abused
   for outbound spam.
